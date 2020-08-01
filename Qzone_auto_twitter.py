@@ -126,7 +126,7 @@ class QzoneSpider(object):
         :return:
         """
         if not force and os.path.exists(self.cookies_file):
-            print('发现已存在 cookies 文件，免登录')
+            QzoneSpider.format_print('发现已存在 cookies 文件，免登录', 2)
             with open(self.cookies_file, 'rb') as f:
                 self.cookies = pickle.load(f)
                 self._g_tk = self.g_tk(self.cookies)
@@ -141,21 +141,20 @@ class QzoneSpider(object):
 
         u = self.driver.find_element_by_id('u')
         u.clear()
-        u.send_keys(self.username)
+        self.send_keys_delay_random(u, self.username)
+
+        time.sleep(2)
 
         p = self.driver.find_element_by_id('p')
         p.clear()
-        p.send_keys(self.password)
+        self.send_keys_delay_random(p, self.password)
 
         self.driver.find_element_by_id('login_button').click()
-        
-        time.sleep(2)
-        if self.username not in self.driver.current_url:
-            self.__fuck_captcha()
 
-        cookies = {cookie['name']: cookie['value'] for cookie in self.driver.get_cookies()}
+        self.__fuck_captcha()
 
         # cookies 持久化
+        cookies = {cookie['name']: cookie['value'] for cookie in self.driver.get_cookies()}
         with open(self.cookies_file, 'wb') as f:
             pickle.dump(cookies, f)
 
@@ -250,17 +249,37 @@ class QzoneSpider(object):
 
         return x
 
+    def __is_visibility(self, locator: tuple) -> bool:
+        """
+        判断元素是否存在且可见
+        :param locator: 定位器
+        :return:
+        """
+        try:
+            return bool(self.wait.until(EC.visibility_of_element_located(locator)))
+        except Exception as e:
+            return False
+
     def __fuck_captcha(self, max_retry_num=6):
         """
         模拟真人滑动验证
         :param max_retry_num: 最多尝试 max_retry_num 次
         :return:
         """
+        # 判断是否出现滑动验证码
+        QzoneSpider.row_print('正在检查是否存在滑动验证码...')
+        if not self.__is_visibility((By.ID, 'newVcodeArea')):
+            QzoneSpider.row_print('无滑动验证码，直接登录')
+
+            return
+
+        QzoneSpider.row_print('发现滑动验证码，正在验证...')
+
         # 切换到验证码 iframe
         self.wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, 'tcaptcha_iframe')))
         time.sleep(0.2)  # 切换 iframe 会有少许延迟，稍作休眠
 
-        for i in range(max_retry_num):
+        for i in range(1, max_retry_num + 1):
             # 背景图
             bg_block = self.wait.until(EC.visibility_of_element_located((By.ID, 'slideBg')))
             bg_img_width = bg_block.size['width']
@@ -307,12 +326,12 @@ class QzoneSpider(object):
 
             # 判断是否通过验证
             if 'user' in self.driver.current_url:
-                print('已通过滑动验证')
+                QzoneSpider.row_print('已通过滑动验证', 1)
                 self.driver.switch_to.default_content()
 
                 return True
             else:
-                print(f'滑块验证不通过，正在进行第{i + 1}次重试...')
+                QzoneSpider.row_print(f'滑块验证不通过，正在进行第 {i} 次重试...')
                 self.wait.until(EC.element_to_be_clickable((By.ID, 'e_reload'))).click()
                 time.sleep(0.2)
 
@@ -352,6 +371,46 @@ class QzoneSpider(object):
         :return:
         """
         return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+    @staticmethod
+    def row_print(string, sleep_time=0.02):
+        """
+        在同一行输出字符
+        :param string: 原始字符串
+        :param sleep_time: 休眠秒数
+        :return:
+        """
+        print('\r[{}] {}'.format(QzoneSpider.now(), string), flush=True, end='')
+
+        time.sleep(sleep_time)
+
+    @staticmethod
+    def format_print(string, sleep_time=0):
+        print('\n[{}] {}'.format(QzoneSpider.now(), string), flush=True, end='')
+
+        sleep_time and time.sleep(sleep_time)
+
+    @staticmethod
+    def now():
+        """
+        当前时间
+        精确到毫秒
+        :return:
+        """
+        return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+    def send_keys_delay_random(self, element, keys, min_delay=0.13, max_delay=0.52):
+        """
+        随机延迟输入
+        :param element:
+        :param keys:
+        :param min_delay:
+        :param max_delay:
+        :return:
+        """
+        for key in keys:
+            element.send_keys(key)
+            time.sleep(random.uniform(min_delay, max_delay))
 
     def __post(self,msg):
         params = {
@@ -406,7 +465,7 @@ class QzoneSpider(object):
         }
         imgUploadRe = []# 记录图片上传的应答
         for pic in pics:
-            print(pic)
+            # print(pic)
             params = {
                 'filename': 'filename',
                 'uin': self.username,
@@ -433,18 +492,23 @@ class QzoneSpider(object):
                 'picfile': pic
             }
             pUrl = 'https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=' + str(self._g_tk) + '&&g_tk='+ str(self._g_tk)
-            print(params)
-            print(pUrl)
+            # print(params)
+            # print(pUrl)
             response = requests.post(pUrl, data=params, headers=headers, cookies=self.cookies)
             print(response.text)
             msg_data = json.loads(re.findall(r"frameElement.callback\((.+?)\);</script></body></html>", response.text)[0])
             print(msg_data)
-            code = msg_data['ret']
+            if 'ret' in msg_data['data']:
+                code = msg_data['data']['ret']
+            elif 'ret' in msg_data:
+                code = msg_data['ret']
+            else:
+                print(查找code出错)
             print(code)
             if code == -100:
                 print('由于之前缓存的 cookies 文件已失效，将尝试自动重新登录...')
                 self.__login(force=True)
-                return self.__post(msg)
+                return self.__post_pic(msg,pics = pics)
             elif code != 0:
                 raise Exception(msg_data['data']['msg'])
 
@@ -529,5 +593,5 @@ if __name__ == '__main__':
     byte_data = output_buffer.getvalue()
     base64_str = base64.b64encode(byte_data)
     picCache.append(base64_str)
-    spider.pImg(msg = '',pic = picCache)
+    spider.pImg(msg = ' ',pic = picCache)
     
